@@ -1,6 +1,6 @@
 """
 MLflow Metrics API — lightweight FastAPI service exposing MLflow run data
-as a clean time-series endpoint for Prism and other consumers.
+as a Prism-compatible time-series endpoint.
 
 Usage:
     python mlflow_metrics_api.py
@@ -9,20 +9,38 @@ Usage:
 
 Swagger UI: http://<host>:5002/docs
 
-Authentication (same pattern as UST Pulse):
-    Header:        x-api-key: <METRICS_API_KEY>
-    Query param:   ?api-key=<METRICS_API_KEY>
+Authentication (Prism api_key scheme):
+    Header:  X-API-Key: <METRICS_API_KEY>
 
-Environment variables:
-    MLFLOW_TRACKING_URI   — default: http://localhost:5001
-    MLFLOW_EXPERIMENT     — default: sql-genai-agent
-    METRICS_API_KEY       — default: changeme  (set this in .env!)
-    METRICS_API_PORT      — default: 5002
+Prism temporal call:
+    GET /metrics?from=2026-04-21T11:00:00Z&to=2026-04-21T12:00:00Z
+
+Manual / rolling window call:
+    GET /metrics?hours=24
+
+Response format (Prism temporal):
+    {
+      "datapoints": [
+        {
+          "timestamp":               "2026-04-21T11:05:00Z",
+          "request_id":              "23940d4b",
+          "question":                "How many customers churned...",
+          "total_latency_seconds":   4.89,
+          "total_cost_usd":          0.000312,
+          "llm_cost_usd":            0.000300,
+          "athena_cost_usd":         0.000012,
+          "total_input_tokens":      1500,
+          "total_output_tokens":     320,
+          "llm_call_count":          2
+        },
+        ...
+      ]
+    }
 """
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import mlflow
 import pandas as pd
@@ -39,7 +57,7 @@ TRACKING_URI    = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5001")
 EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT", "sql-genai-agent")
 API_KEY         = os.environ.get("METRICS_API_KEY", "changeme")
 
-AVAILABLE_METRICS = [
+METRIC_COLUMNS = [
     "total_latency_seconds",
     "total_cost_usd",
     "llm_cost_usd",
@@ -48,16 +66,6 @@ AVAILABLE_METRICS = [
     "total_output_tokens",
     "llm_call_count",
 ]
-
-UNIT_MAP = {
-    "total_latency_seconds": "seconds",
-    "total_cost_usd":        "USD",
-    "llm_cost_usd":          "USD",
-    "athena_cost_usd":       "USD",
-    "total_input_tokens":    "tokens",
-    "total_output_tokens":   "tokens",
-    "llm_call_count":        "count",
-}
 
 # ── Auth (same pattern as UST Pulse) ──────────────────────────────────────────
 
@@ -86,17 +94,23 @@ async def auth_api_key(
 # ── Pydantic models ────────────────────────────────────────────────────────────
 
 class DataPoint(BaseModel):
-    timestamp: str          # ISO 8601 UTC
-    value: float
-    run_id: str
-    question: Optional[str] = None
+    timestamp:               str
+    request_id:              str
+    question:                Optional[str] = None
+    total_latency_seconds:   Optional[float] = None
+    total_cost_usd:          Optional[float] = None
+    llm_cost_usd:            Optional[float] = None
+    athena_cost_usd:         Optional[float] = None
+    total_input_tokens:      Optional[float] = None
+    total_output_tokens:     Optional[float] = None
+    llm_call_count:          Optional[float] = None
 
-class MetricResponse(BaseModel):
-    metric: str
-    unit: str
-    timeframe: dict
+class MetricsResponse(BaseModel):
+    fetched_at: str
+    source: str
+    timeframe: Dict[str, Any]
     total_points: int
-    data: List[DataPoint]
+    datapoints: List[DataPoint]
 
 class AvailableMetricsResponse(BaseModel):
     metrics: List[str]
@@ -108,12 +122,12 @@ class AvailableMetricsResponse(BaseModel):
 app = FastAPI(
     title="UST Pulse — MLflow Metrics API",
     description=(
-        "Query MLflow run metrics as a time-series.\n\n"
+        "Exposes MLflow run metrics as Prism-compatible time-series datapoints.\n\n"
         "**Authentication**: pass your API key via the `x-api-key` header "
         "or the `api-key` query parameter.\n\n"
-        "**Timeframe**: use `hours` for a rolling window (e.g. `hours=24`) "
-        "or pass explicit `start` / `end` as ISO 8601 UTC strings "
-        "(e.g. `2026-04-21T00:00:00Z`)."
+        "**Prism temporal call**: `GET /metrics?from=<ISO>&to=<ISO>`\n\n"
+        "**Rolling window**: `GET /metrics?hours=24`\n\n"
+        "Each datapoint contains all available metrics for that query run."
     ),
     version="1.0.0",
 )
@@ -150,9 +164,9 @@ def health():
     summary="List available metrics",
 )
 async def list_metrics(_: str = Security(auth_api_key)):
-    """Returns all metric names that can be passed to GET /metrics."""
+    """Returns all metric names included in each datapoint."""
     return AvailableMetricsResponse(
-        metrics=AVAILABLE_METRICS,
+        metrics=METRIC_COLUMNS,
         experiment=EXPERIMENT_NAME,
         tracking_uri=TRACKING_URI,
     )
@@ -160,48 +174,46 @@ async def list_metrics(_: str = Security(auth_api_key)):
 
 @app.get(
     "/metrics",
-    response_model=MetricResponse,
-    summary="Get a metric time-series",
+    response_model=MetricsResponse,
+    summary="Get metrics time-series (Prism-compatible)",
 )
-async def get_metric(
-    metric: str,
+async def get_metrics(
+    # Prism sends these
+    from_time: Optional[str] = None,
+    to: Optional[str] = None,
+    resolution: Optional[str] = None,
+    # Fallback for manual / rolling window calls
     hours: Optional[float] = 24,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
     _: str = Security(auth_api_key),
 ):
     """
-    Returns `[{timestamp, value, run_id, question}]` for every user query
-    logged in the given timeframe that has the requested metric recorded.
+    Returns all metrics for every query run in the given timeframe.
 
-    Each data point corresponds to one query run.
+    **Prism temporal call** — pass `from` and `to` as ISO 8601 UTC:\n
+    `GET /metrics?from=2026-04-21T11:00:00Z&to=2026-04-21T12:00:00Z`
 
-    **metric** — metric name (see /metrics/available)\n
-    **hours** — rolling window in hours, default 24 (ignored when start+end are set)\n
-    **start** — ISO 8601 UTC start, e.g. `2026-04-21T00:00:00Z`\n
-    **end** — ISO 8601 UTC end (defaults to now)
+    **Manual rolling window** — pass `hours`:\n
+    `GET /metrics?hours=24`
+
+    Each object in `datapoints` contains `timestamp`, `request_id`, `question`,
+    and all numeric metrics for that run. Prism computes aggregates (`avg`, `max`,
+    `min`, `count`) internally — no summary needed in the response.
     """
-    if metric not in AVAILABLE_METRICS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown metric '{metric}'. Call /metrics/available for valid names.",
-        )
-
     now = datetime.now(timezone.utc)
 
-    if start:
+    if from_time:
         try:
-            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            start_dt = datetime.fromisoformat(from_time.replace("Z", "+00:00"))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid start: {start!r}")
+            raise HTTPException(status_code=400, detail=f"Invalid from: {from_time!r}")
     else:
-        start_dt = now - timedelta(hours=hours)
+        start_dt = now - timedelta(hours=hours or 24)
 
-    if end:
+    if to:
         try:
-            end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(to.replace("Z", "+00:00"))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid end: {end!r}")
+            raise HTTPException(status_code=400, detail=f"Invalid to: {to!r}")
     else:
         end_dt = now
 
@@ -221,35 +233,42 @@ async def get_metric(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"MLflow unreachable: {e}")
 
-    col = f"metrics.{metric}"
-    data_points: List[DataPoint] = []
+    datapoints: List[DataPoint] = []
 
-    if not runs.empty and col in runs.columns:
+    if not runs.empty:
         for _, row in runs.iterrows():
-            raw_value = row.get(col)
-            if pd.isna(raw_value):
-                continue
             try:
                 ts = pd.Timestamp(row["start_time"]).strftime("%Y-%m-%dT%H:%M:%SZ")
             except Exception:
                 ts = "unknown"
-            data_points.append(DataPoint(
+
+            def _val(col):
+                v = row.get(f"metrics.{col}")
+                return round(float(v), 6) if v is not None and not pd.isna(v) else None
+
+            datapoints.append(DataPoint(
                 timestamp=ts,
-                value=round(float(raw_value), 6),
-                run_id=(row.get("run_id") or "")[:8],
-                question=((row.get("params.question") or "")[:80]) or None,
+                request_id=(row.get("run_id") or "")[:8],
+                question=((row.get("params.question") or "")[:120]) or None,
+                total_latency_seconds=_val("total_latency_seconds"),
+                total_cost_usd=_val("total_cost_usd"),
+                llm_cost_usd=_val("llm_cost_usd"),
+                athena_cost_usd=_val("athena_cost_usd"),
+                total_input_tokens=_val("total_input_tokens"),
+                total_output_tokens=_val("total_output_tokens"),
+                llm_call_count=_val("llm_call_count"),
             ))
 
-    return MetricResponse(
-        metric=metric,
-        unit=UNIT_MAP.get(metric, ""),
+    return MetricsResponse(
+        fetched_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        source="UST Pulse — SQL GenAI Agent",
         timeframe={
             "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end":   end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hours": round((end_dt - start_dt).total_seconds() / 3600, 2),
         },
-        total_points=len(data_points),
-        data=data_points,
+        total_points=len(datapoints),
+        datapoints=datapoints,
     )
 
 
