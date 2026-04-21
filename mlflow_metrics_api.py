@@ -58,7 +58,7 @@ EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT", "sql-genai-agent")
 API_KEY         = os.environ.get("METRICS_API_KEY", "changeme")
 
 METRIC_COLUMNS = [
-    "total_latency_seconds",
+    "duration_seconds",
     "total_cost_usd",
     "llm_cost_usd",
     "athena_cost_usd",
@@ -97,7 +97,7 @@ class DataPoint(BaseModel):
     timestamp:               str
     request_id:              str
     question:                Optional[str] = None
-    total_latency_seconds:   Optional[float] = None
+    duration_seconds:        Optional[float] = None
     total_cost_usd:          Optional[float] = None
     llm_cost_usd:            Optional[float] = None
     athena_cost_usd:         Optional[float] = None
@@ -250,7 +250,7 @@ async def get_metrics(
                 timestamp=ts,
                 request_id=(row.get("run_id") or "")[:8],
                 question=((row.get("params.question") or "")[:120]) or None,
-                total_latency_seconds=_val("total_latency_seconds"),
+                duration_seconds=_val("total_latency_seconds"),
                 total_cost_usd=_val("total_cost_usd"),
                 llm_cost_usd=_val("llm_cost_usd"),
                 athena_cost_usd=_val("athena_cost_usd"),
