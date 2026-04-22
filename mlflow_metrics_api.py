@@ -259,6 +259,207 @@ async def get_metrics(
     )
 
 
+# ── Synthetic data + GovAI metrics (/metricsv2) ───────────────────────────────
+
+import random
+import math
+
+random.seed(42)  # reproducible
+
+def _generate_synthetic_dataset(n: int = 2000):
+    """Generate n synthetic query records with realistic distributions."""
+    now = datetime.now(timezone.utc)
+    records = []
+    for i in range(n):
+        # Spread records over last 30 days
+        ts = now - timedelta(seconds=random.randint(0, 30 * 24 * 3600))
+        # Realistic ranges based on real Pulse data
+        duration    = max(1.0, random.gauss(30, 15))          # seconds
+        llm_cost    = max(0.0001, random.gauss(0.12, 0.06))   # USD
+        athena_cost = max(0.0, random.gauss(1.2, 0.8))        # USD
+        in_tokens   = int(max(500, random.gauss(15000, 8000)))
+        out_tokens  = int(max(100, random.gauss(2000, 1000)))
+        llm_calls   = max(1, int(random.gauss(4, 2)))
+        records.append({
+            "timestamp":          ts,
+            "request_id":         f"syn{i:05d}",
+            "duration_seconds":   round(duration, 3),
+            "total_cost_usd":     round(llm_cost + athena_cost, 6),
+            "llm_cost_usd":       round(llm_cost, 6),
+            "athena_cost_usd":    round(athena_cost, 6),
+            "total_input_tokens":  in_tokens,
+            "total_output_tokens": out_tokens,
+            "llm_call_count":     llm_calls,
+        })
+    records.sort(key=lambda r: r["timestamp"])
+    return records
+
+# Generate once at startup
+_SYNTHETIC = _generate_synthetic_dataset(2000)
+
+# GovAI metric derivation specs
+_MAX_DURATION   = max(r["duration_seconds"]   for r in _SYNTHETIC)
+_MAX_COMPLEXITY = max(r["llm_call_count"] * r["total_input_tokens"] for r in _SYNTHETIC)
+
+GOVAI_METRICS = {
+    "response_quality_score": {
+        "description": "0–1 score: low latency + high output/input token ratio = higher quality",
+        "derivation":  "1 - (duration_seconds / max_duration) * 0.4 + min(output_tokens/input_tokens, 1) * 0.6",
+        "unit":        "score (0–1)",
+    },
+    "cost_efficiency_rate": {
+        "description": "LLM cost as a fraction of total cost. High Athena ratio = data-heavy query (expected). High LLM ratio = excess retries (bad).",
+        "derivation":  "llm_cost_usd / total_cost_usd",
+        "unit":        "ratio (0–1)",
+    },
+    "agent_complexity_index": {
+        "description": "Normalised measure of query complexity based on LLM calls and input tokens",
+        "derivation":  "(llm_call_count * total_input_tokens) / max(llm_call_count * total_input_tokens across dataset)",
+        "unit":        "index (0–1)",
+    },
+}
+
+RAW_METRICS_V2 = list(METRIC_MAP.keys())
+ALL_METRICS_V2 = RAW_METRICS_V2 + list(GOVAI_METRICS.keys())
+
+
+def _derive_govai(record: dict, metric: str) -> float:
+    if metric == "response_quality_score":
+        latency_penalty = (record["duration_seconds"] / _MAX_DURATION) * 0.4
+        token_ratio     = min(record["total_output_tokens"] / max(record["total_input_tokens"], 1), 1.0) * 0.6
+        return round(max(0.0, min(1.0, 1 - latency_penalty + token_ratio)), 4)
+    if metric == "cost_efficiency_rate":
+        total = record["total_cost_usd"]
+        if total <= 0:
+            return 0.0
+        return round(record["llm_cost_usd"] / total, 4)
+    if metric == "agent_complexity_index":
+        raw = record["llm_call_count"] * record["total_input_tokens"]
+        return round(raw / max(_MAX_COMPLEXITY, 1), 4)
+    return 0.0
+
+
+class MetricsV2Response(BaseModel):
+    metric:      str
+    is_derived:  bool
+    description: Optional[str] = None
+    derivation:  Optional[str] = None
+    unit:        str
+    fetched_at:  str
+    source:      str
+    timeframe:   Dict[str, Any]
+    total_points: int
+    datapoints:  List[DataPoint]
+
+
+@app.get(
+    "/metricsv2",
+    response_model=MetricsV2Response,
+    summary="Get a metric time-series from synthetic demo data (GovAI-ready)",
+)
+async def get_metrics_v2(
+    metric: str = Query(
+        ...,
+        description="Raw KPI or derived GovAI metric — see /metricsv2/available",
+        example="response_quality_score",
+    ),
+    from_: Optional[str] = Query(None, alias="from", description="ISO 8601 UTC start"),
+    to:    Optional[str] = Query(None, description="ISO 8601 UTC end (defaults to now)"),
+    hours: Optional[float] = Query(24, description="Rolling window in hours (fallback)"),
+    _: str = Security(auth_api_key),
+):
+    """
+    Returns synthetic demo data for any raw KPI or derived GovAI metric.
+
+    **Raw KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow)\n
+    **Derived GovAI metrics**:
+    - `response_quality_score` — latency + token ratio score (0–1)
+    - `cost_efficiency_rate` — LLM cost fraction of total cost (0–1)
+    - `agent_complexity_index` — normalised query complexity (0–1)
+    """
+    if metric not in ALL_METRICS_V2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown metric '{metric}'. Call /metricsv2/available for valid names.",
+        )
+
+    now = datetime.now(timezone.utc)
+
+    if from_:
+        try:
+            start_dt = datetime.fromisoformat(from_.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid from: {from_!r}")
+    else:
+        start_dt = now - timedelta(hours=hours or 24)
+
+    end_dt = now
+    if to:
+        try:
+            end_dt = datetime.fromisoformat(to.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid to: {to!r}")
+
+    is_derived = metric in GOVAI_METRICS
+    govai_info = GOVAI_METRICS.get(metric, {})
+    unit       = govai_info.get("unit", UNIT_MAP.get(metric, ""))
+
+    datapoints: List[DataPoint] = []
+    for rec in _SYNTHETIC:
+        ts = rec["timestamp"]
+        if ts < start_dt or ts > end_dt:
+            continue
+        if is_derived:
+            value = _derive_govai(rec, metric)
+        else:
+            value = rec.get(metric)
+            if value is None:
+                continue
+            value = round(float(value), 6)
+        datapoints.append(DataPoint(
+            timestamp=ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            request_id=rec["request_id"],
+            value=value,
+        ))
+
+    return MetricsV2Response(
+        metric=metric,
+        is_derived=is_derived,
+        description=govai_info.get("description"),
+        derivation=govai_info.get("derivation"),
+        unit=unit,
+        fetched_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        source="UST Pulse — Synthetic Demo Data",
+        timeframe={
+            "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end":   end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hours": round((end_dt - start_dt).total_seconds() / 3600, 2),
+        },
+        total_points=len(datapoints),
+        datapoints=datapoints,
+    )
+
+
+@app.get(
+    "/metricsv2/available",
+    summary="List available metrics for /metricsv2",
+)
+async def list_metrics_v2(_: str = Security(auth_api_key)):
+    """Returns raw KPIs and derived GovAI metrics available in /metricsv2."""
+    return {
+        "raw_metrics": RAW_METRICS_V2,
+        "govai_derived_metrics": {
+            name: {
+                "description": info["description"],
+                "derivation":  info["derivation"],
+                "unit":        info["unit"],
+            }
+            for name, info in GOVAI_METRICS.items()
+        },
+        "source": "synthetic demo dataset (2000 records, 30-day window)",
+    }
+
+
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
