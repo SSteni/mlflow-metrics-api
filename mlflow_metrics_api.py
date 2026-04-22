@@ -17,7 +17,9 @@ Example calls:
     GET /metrics?metric=total_cost_usd&from=2026-04-21T11:00:00Z&to=2026-04-21T12:00:00Z
 """
 
+import math
 import os
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -260,9 +262,6 @@ async def get_metrics(
 
 
 # ── Synthetic data + GovAI metrics (/metricsv2) ───────────────────────────────
-
-import random
-import math
 
 random.seed(42)  # reproducible
 
