@@ -401,7 +401,7 @@ async def get_metrics_v2(
 
     is_derived = metric in GOVAI_METRICS
     govai_info = GOVAI_METRICS.get(metric, {})
-    unit       = govai_info.get("unit", UNIT_MAP.get(metric, ""))
+    unit       = govai_info.get("unit", "")
 
     datapoints: List[DataPoint] = []
     for rec in _SYNTHETIC:
