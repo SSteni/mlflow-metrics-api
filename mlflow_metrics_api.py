@@ -297,23 +297,23 @@ def _generate_synthetic_dataset(n: int = 2000):
 _SYNTHETIC = _generate_synthetic_dataset(2000)
 
 GOVAI_METRICS = {
-    "cost_efficiency_rate": {
-        "description": "LLM cost as a fraction of total cost. High value = excess LLM retries (bad). Low value = data-heavy query (expected).",
+    "sql_sanity_score": {
+        "description": "SQL execution cost as a fraction of total cost. Low value = well-optimised query spending most budget on data retrieval (good). High value = excess LLM retries relative to data work (investigate).",
         "derivation":  "llm_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
-    "data_intensity_score": {
-        "description": "How data-heavy the query was. High value = large Athena scans. Low value = mostly LLM reasoning.",
+    "answer_groundedness_score": {
+        "description": "Proportion of cost driven by actual data retrieval (Athena). High value = response grounded in real queried data. Low value = mostly LLM reasoning with little data backing.",
         "derivation":  "athena_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
-    "complex_query_rate": {
-        "description": "1 if the query required complex multi-step GoT reasoning (>3 LLM calls), 0 if simple. Avg across window = % of complex queries.",
+    "audit_trail_completeness": {
+        "description": "1 if the query involved multi-step reasoning (>3 LLM calls), producing a richer, auditable trace. 0 if a simple single-pass query. Average across window = proportion of fully-traceable queries.",
         "derivation":  "1 if llm_call_count > 3 else 0",
         "unit":        "binary (0 or 1)",
     },
-    "response_time_ratio": {
-        "description": "How much of the 90-second timeout budget was used. Close to 1 = dangerously near timeout. Above 1 = timed out.",
+    "response_accuracy_score": {
+        "description": "How much of the 90-second timeout budget was consumed. Low value = fast, confident response. Value approaching 1 = near-timeout risk. Above 1 = timeout breach. Future: replace with user feedback rating (0–5).",
         "derivation":  "duration_seconds / 90",
         "unit":        "ratio (0–1+)",
     },
@@ -324,15 +324,15 @@ ALL_METRICS_V2 = RAW_METRICS_V2 + list(GOVAI_METRICS.keys())
 
 
 def _derive_govai(record: dict, metric: str) -> float:
-    if metric == "cost_efficiency_rate":
+    if metric == "sql_sanity_score":
         total = record["total_cost_usd"]
         return round(record["llm_cost_usd"] / total, 4) if total > 0 else 0.0
-    if metric == "data_intensity_score":
+    if metric == "answer_groundedness_score":
         total = record["total_cost_usd"]
         return round(record["athena_cost_usd"] / total, 4) if total > 0 else 0.0
-    if metric == "complex_query_rate":
+    if metric == "audit_trail_completeness":
         return 1.0 if record["llm_call_count"] > 3 else 0.0
-    if metric == "response_time_ratio":
+    if metric == "response_accuracy_score":
         return round(record["duration_seconds"] / 90, 4)
     return 0.0
 
@@ -359,7 +359,7 @@ async def get_metrics_v2(
     metric: str = Query(
         ...,
         description="Raw KPI or derived GovAI metric — see /metricsv2/available",
-        example="cost_efficiency_rate",
+        example="sql_sanity_score",
     ),
     from_: Optional[str] = Query(None, alias="from", description="ISO 8601 UTC start"),
     to:    Optional[str] = Query(None, description="ISO 8601 UTC end (defaults to now)"),
@@ -373,11 +373,29 @@ async def get_metrics_v2(
     `duration_seconds`, `total_cost_usd`, `llm_cost_usd`, `athena_cost_usd`,
     `total_input_tokens`, `total_output_tokens`, `llm_call_count`
 
+    ---
+
     **Derived GovAI metrics**:
-    - `cost_efficiency_rate` — LLM cost / total cost (ratio 0–1)
-    - `data_intensity_score` — Athena cost / total cost (ratio 0–1)
-    - `complex_query_rate` — 1 if query used GoT (>3 LLM calls), 0 if simple
-    - `response_time_ratio` — duration / 90s timeout budget (ratio 0–1+)
+
+    - **`sql_sanity_score`** *(ratio 0–1)*\n
+      SQL execution cost as a fraction of total cost. Low value = well-optimised query spending
+      most of its budget on data retrieval (good). High value = excess LLM retries relative to
+      data work (investigate). Derived from: `llm_cost_usd / total_cost_usd`.
+
+    - **`answer_groundedness_score`** *(ratio 0–1)*\n
+      Proportion of cost driven by actual data retrieval (Athena). High value = response is
+      grounded in real queried data. Low value = mostly LLM reasoning with little data backing.
+      Derived from: `athena_cost_usd / total_cost_usd`.
+
+    - **`audit_trail_completeness`** *(binary 0 or 1)*\n
+      1 if the query involved multi-step reasoning (>3 LLM calls), producing a richer, auditable
+      trace. 0 if a simple single-pass query. Average across a window = proportion of
+      fully-traceable queries. Derived from: `1 if llm_call_count > 3 else 0`.
+
+    - **`response_accuracy_score`** *(ratio 0–1+)*\n
+      How much of the 90-second timeout budget was consumed. Low value = fast, confident response.
+      Value approaching 1 = near-timeout risk. Above 1 = timeout breach. Future: replace with
+      user feedback rating (0–5). Derived from: `duration_seconds / 90`.
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
