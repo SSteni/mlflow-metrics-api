@@ -98,10 +98,10 @@ class AvailableMetricsResponse(BaseModel):
 app = FastAPI(
     title="UST Pulse — MLflow Metrics API",
     description=(
-        "Exposes MLflow run metrics as Prism-compatible time-series datapoints.\n\n"
+        "Exposes MLflow run metrics.\n\n"
         "**Authentication**: pass your API key via the `x-api-key` header "
         "or the `api-key` query parameter.\n\n"
-        "**One metric at a time** — pass the `metric` name you want.\n\n"
+        "**One metric at a time** - pass the `metric` name you want.\n\n"
         "**Prism temporal call**: `GET /metrics?metric=duration_seconds&from=<ISO>&to=<ISO>`\n\n"
         "**Rolling window**: `GET /metrics?metric=duration_seconds&hours=24`\n\n"
         "Each datapoint contains `timestamp`, `request_id`, and `value` of the requested metric."
@@ -131,7 +131,7 @@ async def _global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/health", summary="Health check (no auth required)")
 def health():
-    """Liveness probe — returns 200 if the service is up."""
+    """Liveness probe - returns 200 if the service is up."""
     return {"status": "ok", "tracking_uri": TRACKING_URI}
 
 
@@ -157,25 +157,25 @@ async def list_metrics(_: str = Security(auth_api_key)):
 async def get_metrics(
     metric: str = Query(
         ...,
-        description="Metric name — see /metrics/available for valid names",
+        description="Metric name - see /metrics/available for valid names",
         example="duration_seconds",
     ),
     from_: Optional[str] = Query(
         None,
         alias="from",
-        description="Window start — ISO 8601 UTC, e.g. 2026-04-21T00:00:00Z",
+        description="Window start - ISO 8601 UTC, e.g. 2026-04-21T00:00:00Z",
     ),
     to: Optional[str] = Query(
         None,
-        description="Window end — ISO 8601 UTC (defaults to now)",
+        description="Window end - ISO 8601 UTC (defaults to now)",
     ),
     resolution: Optional[str] = Query(
         None,
-        description="Optional resolution hint (e.g. 5m) — passed by Prism, not used internally",
+        description="Optional resolution hint (e.g. 5m) - passed by Prism, not used internally",
     ),
     hours: Optional[float] = Query(
         24,
-        description="Rolling window in hours — used when from/to are not provided",
+        description="Rolling window in hours - used when from/to are not provided",
     ),
     _: str = Security(auth_api_key),
 ):
@@ -250,7 +250,7 @@ async def get_metrics(
     return MetricsResponse(
         metric=metric,
         fetched_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        source="UST Pulse — SQL GenAI Agent",
+        source="UST Pulse - SQL GenAI Agent",
         timeframe={
             "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end":   end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -353,7 +353,7 @@ class MetricsV2Response(BaseModel):
 @app.get(
     "/metricsv2",
     response_model=MetricsV2Response,
-    summary="Get a metric time-series from synthetic demo data (GovAI-ready)",
+    summary="Get a Governance Metric (GovAI-ready)",
 )
 async def get_metrics_v2(
     metric: str = Query(
@@ -367,7 +367,7 @@ async def get_metrics_v2(
     _: str = Security(auth_api_key),
 ):
     """
-    Returns synthetic demo data for any raw KPI or derived GovAI metric.
+    Returns data for any KPI or Governance AI (GovAI) metric.
 
     **Raw KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow):\n
     `duration_seconds`, `total_cost_usd`, `llm_cost_usd`, `athena_cost_usd`,
