@@ -380,22 +380,22 @@ async def get_metrics_v2(
     - **`sql_sanity_score`** *(ratio 0–1)*\n
       SQL execution cost as a fraction of total cost. Low value = well-optimised query spending
       most of its budget on data retrieval (good). High value = excess LLM retries relative to
-      data work (investigate). Derived from: `llm_cost_usd / total_cost_usd`.
+      data work (investigate).
 
     - **`answer_groundedness_score`** *(ratio 0–1)*\n
       Proportion of cost driven by actual data retrieval (Athena). High value = response is
       grounded in real queried data. Low value = mostly LLM reasoning with little data backing.
-      Derived from: `athena_cost_usd / total_cost_usd`.
+      
 
     - **`audit_trail_completeness`** *(binary 0 or 1)*\n
       1 if the query involved multi-step reasoning (>3 LLM calls), producing a richer, auditable
       trace. 0 if a simple single-pass query. Average across a window = proportion of
-      fully-traceable queries. Derived from: `1 if llm_call_count > 3 else 0`.
+      fully-traceable queries. 
 
     - **`response_accuracy_score`** *(ratio 0–1+)*\n
       How much of the 90-second timeout budget was consumed. Low value = fast, confident response.
       Value approaching 1 = near-timeout risk. Above 1 = timeout breach. Future: replace with
-      user feedback rating (0–5). Derived from: `duration_seconds / 90`.
+      user feedback rating (0–5).
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
