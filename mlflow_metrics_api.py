@@ -296,25 +296,26 @@ def _generate_synthetic_dataset(n: int = 2000):
 # Generate once at startup
 _SYNTHETIC = _generate_synthetic_dataset(2000)
 
-# GovAI metric derivation specs
-_MAX_DURATION   = max(r["duration_seconds"]   for r in _SYNTHETIC)
-_MAX_COMPLEXITY = max(r["llm_call_count"] * r["total_input_tokens"] for r in _SYNTHETIC)
-
 GOVAI_METRICS = {
-    "response_quality_score": {
-        "description": "0–1 score: low latency + high output/input token ratio = higher quality",
-        "derivation":  "1 - (duration_seconds / max_duration) * 0.4 + min(output_tokens/input_tokens, 1) * 0.6",
-        "unit":        "score (0–1)",
-    },
     "cost_efficiency_rate": {
-        "description": "LLM cost as a fraction of total cost. High Athena ratio = data-heavy query (expected). High LLM ratio = excess retries (bad).",
+        "description": "LLM cost as a fraction of total cost. High value = excess LLM retries (bad). Low value = data-heavy query (expected).",
         "derivation":  "llm_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
-    "agent_complexity_index": {
-        "description": "Normalised measure of query complexity based on LLM calls and input tokens",
-        "derivation":  "(llm_call_count * total_input_tokens) / max(llm_call_count * total_input_tokens across dataset)",
-        "unit":        "index (0–1)",
+    "data_intensity_score": {
+        "description": "How data-heavy the query was. High value = large Athena scans. Low value = mostly LLM reasoning.",
+        "derivation":  "athena_cost_usd / total_cost_usd",
+        "unit":        "ratio (0–1)",
+    },
+    "avg_tokens_per_llm_call": {
+        "description": "Average tokens processed per LLM call. High value = overloaded context windows, risk of hitting token limits.",
+        "derivation":  "total_input_tokens / llm_call_count",
+        "unit":        "tokens",
+    },
+    "tokens_per_second": {
+        "description": "Throughput of the query — total tokens processed per second. Low value = slow query relative to its size.",
+        "derivation":  "(total_input_tokens + total_output_tokens) / duration_seconds",
+        "unit":        "tokens/sec",
     },
 }
 
@@ -323,18 +324,19 @@ ALL_METRICS_V2 = RAW_METRICS_V2 + list(GOVAI_METRICS.keys())
 
 
 def _derive_govai(record: dict, metric: str) -> float:
-    if metric == "response_quality_score":
-        latency_penalty = (record["duration_seconds"] / _MAX_DURATION) * 0.4
-        token_ratio     = min(record["total_output_tokens"] / max(record["total_input_tokens"], 1), 1.0) * 0.6
-        return round(max(0.0, min(1.0, 1 - latency_penalty + token_ratio)), 4)
     if metric == "cost_efficiency_rate":
         total = record["total_cost_usd"]
-        if total <= 0:
-            return 0.0
-        return round(record["llm_cost_usd"] / total, 4)
-    if metric == "agent_complexity_index":
-        raw = record["llm_call_count"] * record["total_input_tokens"]
-        return round(raw / max(_MAX_COMPLEXITY, 1), 4)
+        return round(record["llm_cost_usd"] / total, 4) if total > 0 else 0.0
+    if metric == "data_intensity_score":
+        total = record["total_cost_usd"]
+        return round(record["athena_cost_usd"] / total, 4) if total > 0 else 0.0
+    if metric == "avg_tokens_per_llm_call":
+        calls = record["llm_call_count"]
+        return round(record["total_input_tokens"] / calls, 2) if calls > 0 else 0.0
+    if metric == "tokens_per_second":
+        duration = record["duration_seconds"]
+        total_tokens = record["total_input_tokens"] + record["total_output_tokens"]
+        return round(total_tokens / duration, 2) if duration > 0 else 0.0
     return 0.0
 
 
@@ -360,7 +362,7 @@ async def get_metrics_v2(
     metric: str = Query(
         ...,
         description="Raw KPI or derived GovAI metric — see /metricsv2/available",
-        example="response_quality_score",
+        example="cost_efficiency_rate",
     ),
     from_: Optional[str] = Query(None, alias="from", description="ISO 8601 UTC start"),
     to:    Optional[str] = Query(None, description="ISO 8601 UTC end (defaults to now)"),
