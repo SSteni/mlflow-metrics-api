@@ -307,15 +307,15 @@ GOVAI_METRICS = {
         "derivation":  "athena_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
-    "avg_tokens_per_llm_call": {
-        "description": "Average tokens processed per LLM call. High value = overloaded context windows, risk of hitting token limits.",
-        "derivation":  "total_input_tokens / llm_call_count",
-        "unit":        "tokens",
+    "complex_query_rate": {
+        "description": "1 if the query required complex multi-step GoT reasoning (>3 LLM calls), 0 if simple. Avg across window = % of complex queries.",
+        "derivation":  "1 if llm_call_count > 3 else 0",
+        "unit":        "binary (0 or 1)",
     },
-    "tokens_per_second": {
-        "description": "Throughput of the query — total tokens processed per second. Low value = slow query relative to its size.",
-        "derivation":  "(total_input_tokens + total_output_tokens) / duration_seconds",
-        "unit":        "tokens/sec",
+    "response_time_ratio": {
+        "description": "How much of the 90-second timeout budget was used. Close to 1 = dangerously near timeout. Above 1 = timed out.",
+        "derivation":  "duration_seconds / 90",
+        "unit":        "ratio (0–1+)",
     },
 }
 
@@ -330,13 +330,10 @@ def _derive_govai(record: dict, metric: str) -> float:
     if metric == "data_intensity_score":
         total = record["total_cost_usd"]
         return round(record["athena_cost_usd"] / total, 4) if total > 0 else 0.0
-    if metric == "avg_tokens_per_llm_call":
-        calls = record["llm_call_count"]
-        return round(record["total_input_tokens"] / calls, 2) if calls > 0 else 0.0
-    if metric == "tokens_per_second":
-        duration = record["duration_seconds"]
-        total_tokens = record["total_input_tokens"] + record["total_output_tokens"]
-        return round(total_tokens / duration, 2) if duration > 0 else 0.0
+    if metric == "complex_query_rate":
+        return 1.0 if record["llm_call_count"] > 3 else 0.0
+    if metric == "response_time_ratio":
+        return round(record["duration_seconds"] / 90, 4)
     return 0.0
 
 
@@ -372,11 +369,15 @@ async def get_metrics_v2(
     """
     Returns synthetic demo data for any raw KPI or derived GovAI metric.
 
-    **Raw KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow)\n
+    **Raw KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow):\n
+    `duration_seconds`, `total_cost_usd`, `llm_cost_usd`, `athena_cost_usd`,
+    `total_input_tokens`, `total_output_tokens`, `llm_call_count`
+
     **Derived GovAI metrics**:
-    - `response_quality_score` — latency + token ratio score (0–1)
-    - `cost_efficiency_rate` — LLM cost fraction of total cost (0–1)
-    - `agent_complexity_index` — normalised query complexity (0–1)
+    - `cost_efficiency_rate` — LLM cost / total cost (ratio 0–1)
+    - `data_intensity_score` — Athena cost / total cost (ratio 0–1)
+    - `complex_query_rate` — 1 if query used GoT (>3 LLM calls), 0 if simple
+    - `response_time_ratio` — duration / 90s timeout budget (ratio 0–1+)
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
