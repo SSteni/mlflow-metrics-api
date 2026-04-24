@@ -408,6 +408,12 @@ async def get_metrics_v2(
       meaning SQL was well-formed on the first attempt. Close to 0 = excessive LLM retries, meaning the
       agent struggled to produce valid SQL and required multiple correction cycles.
 
+      - **`feedback_accuracy_score`** *(score 0–5)*\n
+      Direct human validation of the AI response, rated 0–5 by the user who submitted the query.
+      5 = user confirmed the answer was fully accurate and trustworthy. 0 = response was rejected
+      as incorrect or misleading. This is the primary human-in-the-loop oversight signal required
+      by AI governance frameworks — it records that a real person has reviewed and vetted the AI output.
+      
     - **`answer_groundedness_score`** *(ratio 0–1)*\n
       Measures how much of the query's work was driven by real data retrieval versus pure LLM reasoning.
       A high score means the response is backed by significant database access, reducing hallucination risk.
@@ -419,11 +425,6 @@ async def get_metrics_v2(
       0 = simple single-pass query with minimal audit footprint. Average across window = proportion of
       fully-traceable queries.
 
-    - **`feedback_accuracy_score`** *(score 0–5)*\n
-      Direct human validation of the AI response, rated 0–5 by the user who submitted the query.
-      5 = user confirmed the answer was fully accurate and trustworthy. 0 = response was rejected
-      as incorrect or misleading. This is the primary human-in-the-loop oversight signal required
-      by AI governance frameworks — it records that a real person has reviewed and vetted the AI output.
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
