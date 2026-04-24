@@ -1,5 +1,5 @@
 """
-MLflow Metrics API — lightweight FastAPI service exposing MLflow run data
+MLflow Metrics API - lightweight FastAPI service exposing MLflow run data
 as a Prism-compatible time-series endpoint.
 
 Usage:
@@ -101,7 +101,7 @@ app = FastAPI(
         "Exposes MLflow run metrics.\n\n"
         "**Authentication**: pass your API key via the `x-api-key` header "
         "or the `api-key` query parameter.\n\n"
-        "**One metric at a time** - pass the `metric` name you want.\n\n"
+        "**One metric at a time**: pass the `metric` name you want.\n\n"
         "**Prism temporal call**: `GET /metrics?metric=duration_seconds&from=<ISO>&to=<ISO>`\n\n"
         "**Rolling window**: `GET /metrics?metric=duration_seconds&hours=24`\n\n"
         "Each datapoint contains `timestamp`, `request_id`, and `value` of the requested metric."
@@ -152,7 +152,7 @@ async def list_metrics(_: str = Security(auth_api_key)):
 @app.get(
     "/metrics",
     response_model=MetricsResponse,
-    summary="Get a metric time-series (Prism-compatible)",
+    summary="Get a metric",
 )
 async def get_metrics(
     metric: str = Query(
@@ -298,22 +298,43 @@ _SYNTHETIC = _generate_synthetic_dataset(2000)
 
 GOVAI_METRICS = {
     "sql_sanity_score": {
-        "description": "SQL execution cost as a fraction of total cost. Low value = well-optimised query spending most budget on data retrieval (good). High value = excess LLM retries relative to data work (investigate).",
+        "description": (
+            "Indicates whether the SQL generation process was efficient and well-targeted. "
+            "A low score (close to 0) means the agent spent most of its effort on actual data retrieval "
+            "rather than LLM inference — a sign the SQL was generated correctly on the first attempt. "
+            "A high score suggests excessive LLM retries, which may indicate the agent struggled to "
+            "produce valid or correct SQL and required multiple correction cycles."
+        ),
         "derivation":  "llm_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
     "answer_groundedness_score": {
-        "description": "Proportion of cost driven by actual data retrieval (Athena). High value = response grounded in real queried data. Low value = mostly LLM reasoning with little data backing.",
+        "description": (
+            "Measures how much of the query's work was driven by real data retrieval versus pure language "
+            "model reasoning. A high score means the response is backed by significant database access, "
+            "reducing the risk of hallucinated or unsupported answers. A low score may indicate the agent "
+            "answered from reasoning alone with minimal data evidence."
+        ),
         "derivation":  "athena_cost_usd / total_cost_usd",
         "unit":        "ratio (0–1)",
     },
     "audit_trail_completeness": {
-        "description": "1 if the query involved multi-step reasoning (>3 LLM calls), producing a richer, auditable trace. 0 if a simple single-pass query. Average across window = proportion of fully-traceable queries.",
+        "description": (
+            "Flags whether a query produced a rich, multi-step reasoning trace suitable for governance audit. "
+            "A value of 1 indicates the agent went through multiple reasoning steps (>3 LLM calls), generating "
+            "a detailed traceable log of its decision process. A value of 0 indicates a simple, single-pass query "
+            "with a minimal audit footprint. Average across a window = proportion of fully-traceable queries."
+        ),
         "derivation":  "1 if llm_call_count > 3 else 0",
         "unit":        "binary (0 or 1)",
     },
     "response_accuracy_score": {
-        "description": "How much of the 90-second timeout budget was consumed. Low value = fast, confident response. Value approaching 1 = near-timeout risk. Above 1 = timeout breach. Future: replace with user feedback rating (0–5).",
+        "description": (
+            "A proxy for response quality based on how efficiently the agent responded within its time budget. "
+            "A low value indicates a fast, confident response with processing capacity to spare. "
+            "A value close to 1 signals the agent was under significant processing pressure. "
+            "A value above 1 indicates the query exceeded the timeout threshold. "
+        ),
         "derivation":  "duration_seconds / 90",
         "unit":        "ratio (0–1+)",
     },
@@ -358,7 +379,7 @@ class MetricsV2Response(BaseModel):
 async def get_metrics_v2(
     metric: str = Query(
         ...,
-        description="Raw KPI or derived GovAI metric — see /metricsv2/available",
+        description="Operational KPI or Governance AI (GovAI) metric — see /metricsv2/available",
         example="sql_sanity_score",
     ),
     from_: Optional[str] = Query(None, alias="from", description="ISO 8601 UTC start"),
@@ -369,7 +390,7 @@ async def get_metrics_v2(
     """
     Returns data for any KPI or Governance AI (GovAI) metric.
 
-    **Raw KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow):\n
+    **Operational KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow):\n
     `duration_seconds`, `total_cost_usd`, `llm_cost_usd`, `athena_cost_usd`,
     `total_input_tokens`, `total_output_tokens`, `llm_call_count`
 
@@ -378,24 +399,26 @@ async def get_metrics_v2(
     **Derived GovAI metrics**:
 
     - **`sql_sanity_score`** *(ratio 0–1)*\n
-      SQL execution cost as a fraction of total cost. Low value = well-optimised query spending
-      most of its budget on data retrieval (good). High value = excess LLM retries relative to
-      data work (investigate).
+      Indicates whether the SQL generation process was efficient and well-targeted. A low score means
+      the agent spent most effort on data retrieval — SQL was correct on the first attempt. A high score
+      suggests excessive LLM retries, meaning the agent struggled to produce valid SQL.
 
     - **`answer_groundedness_score`** *(ratio 0–1)*\n
-      Proportion of cost driven by actual data retrieval (Athena). High value = response is
-      grounded in real queried data. Low value = mostly LLM reasoning with little data backing.
-      
+      Measures how much of the query's work was driven by real data retrieval versus pure LLM reasoning.
+      A high score means the response is backed by significant database access, reducing hallucination risk.
+      A low score may indicate the agent answered from reasoning alone with minimal data evidence.
 
     - **`audit_trail_completeness`** *(binary 0 or 1)*\n
-      1 if the query involved multi-step reasoning (>3 LLM calls), producing a richer, auditable
-      trace. 0 if a simple single-pass query. Average across a window = proportion of
-      fully-traceable queries. 
+      Flags whether the query produced a rich, multi-step reasoning trace suitable for governance audit.
+      1 = agent went through multiple reasoning steps (>3 LLM calls), generating a detailed traceable log.
+      0 = simple single-pass query with minimal audit footprint. Average across window = proportion of
+      fully-traceable queries.
 
     - **`response_accuracy_score`** *(ratio 0–1+)*\n
-      How much of the 90-second timeout budget was consumed. Low value = fast, confident response.
-      Value approaching 1 = near-timeout risk. Above 1 = timeout breach. Future: replace with
-      user feedback rating (0–5).
+      Proxy for response quality based on how efficiently the agent responded within its time budget.
+      Low value = fast, confident response with processing capacity to spare. Close to 1 = agent under
+      significant processing pressure. Above 1 = query exceeded timeout. Will be replaced with direct
+      user feedback ratings (0–5) once the feedback pipeline is connected.
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
