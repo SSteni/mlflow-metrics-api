@@ -315,8 +315,7 @@ GOVAI_METRICS = {
             "A score below 3 indicates a serious concern that warrants review. "
             "Sourced from the SQL GenAI API, which logs this metric to MLflow after each query run."
         ),
-        "derivation":  "security check score logged by SQL GenAI API per run (0–5)",
-        "unit":        "score (0–5)",
+        "unit": "score (0–5)",
     },
     "answer_groundedness_score": {
         "description": (
@@ -325,8 +324,7 @@ GOVAI_METRICS = {
             "reducing the risk of hallucinated or unsupported answers. A low score may indicate the agent "
             "answered from reasoning alone with minimal data evidence."
         ),
-        "derivation":  "athena_cost_usd / total_cost_usd",
-        "unit":        "ratio (0–1)",
+        "unit": "ratio (0–1)",
     },
     "audit_trail_completeness": {
         "description": (
@@ -335,8 +333,7 @@ GOVAI_METRICS = {
             "a detailed traceable log of its decision process. A value of 0 indicates a simple, single-pass query "
             "with a minimal audit footprint. Average across a window = proportion of fully-traceable queries."
         ),
-        "derivation":  "1 if llm_call_count > 3 else 0",
-        "unit":        "binary (0 or 1)",
+        "unit": "binary (0 or 1)",
     },
     "feedback_accuracy_score": {
         "description": (
@@ -346,8 +343,7 @@ GOVAI_METRICS = {
             "This is the primary human-in-the-loop oversight signal required by AI governance frameworks - "
             "it records that a real person has reviewed and vetted the AI output."
         ),
-        "derivation":  "user feedback rating (0–5), sourced from POST /feedback",
-        "unit":        "score (0–5)",
+        "unit": "score (0–5)",
     },
 }
 
@@ -372,7 +368,6 @@ class MetricsV2Response(BaseModel):
     metric:      str
     is_derived:  bool
     description: Optional[str] = None
-    derivation:  Optional[str] = None
     unit:        str
     fetched_at:  str
     source:      str
@@ -481,7 +476,6 @@ async def get_metrics_v2(
         metric=metric,
         is_derived=is_derived,
         description=govai_info.get("description"),
-        derivation=govai_info.get("derivation"),
         unit=unit,
         fetched_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         source="UST Pulse — Synthetic Demo Data",
