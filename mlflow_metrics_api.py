@@ -278,17 +278,20 @@ def _generate_synthetic_dataset(n: int = 2000):
         athena_cost = max(0.0, random.gauss(1.2, 0.8))        # USD
         in_tokens   = int(max(500, random.gauss(15000, 8000)))
         out_tokens  = int(max(100, random.gauss(2000, 1000)))
-        llm_calls   = max(1, int(random.gauss(4, 2)))
+        llm_calls    = max(1, int(random.gauss(4, 2)))
+        # Feedback weighted toward positive (most users who rate are satisfied)
+        feedback     = round(min(5.0, max(0.0, random.gauss(3.8, 0.9))), 1)
         records.append({
-            "timestamp":          ts,
-            "request_id":         f"syn{i:05d}",
-            "duration_seconds":   round(duration, 3),
-            "total_cost_usd":     round(llm_cost + athena_cost, 6),
-            "llm_cost_usd":       round(llm_cost, 6),
-            "athena_cost_usd":    round(athena_cost, 6),
+            "timestamp":           ts,
+            "request_id":          f"syn{i:05d}",
+            "duration_seconds":    round(duration, 3),
+            "total_cost_usd":      round(llm_cost + athena_cost, 6),
+            "llm_cost_usd":        round(llm_cost, 6),
+            "athena_cost_usd":     round(athena_cost, 6),
             "total_input_tokens":  in_tokens,
             "total_output_tokens": out_tokens,
-            "llm_call_count":     llm_calls,
+            "llm_call_count":      llm_calls,
+            "feedback_score":      feedback,
         })
     records.sort(key=lambda r: r["timestamp"])
     return records
@@ -299,14 +302,14 @@ _SYNTHETIC = _generate_synthetic_dataset(2000)
 GOVAI_METRICS = {
     "sql_sanity_score": {
         "description": (
-            "Indicates whether the SQL generation process was efficient and well-targeted. "
-            "A low score (close to 0) means the agent spent most of its effort on actual data retrieval "
-            "rather than LLM inference — a sign the SQL was generated correctly on the first attempt. "
-            "A high score suggests excessive LLM retries, which may indicate the agent struggled to "
+            "Rates the quality of the SQL generation process on a 0–5 scale. "
+            "A score of 5 means the agent spent almost all its budget on real data retrieval — "
+            "SQL was well-formed and executed cleanly on the first attempt. "
+            "A score close to 0 indicates excessive LLM retries, meaning the agent struggled to "
             "produce valid or correct SQL and required multiple correction cycles."
         ),
-        "derivation":  "llm_cost_usd / total_cost_usd",
-        "unit":        "ratio (0–1)",
+        "derivation":  "(1 - llm_cost_usd / total_cost_usd) * 5",
+        "unit":        "score (0–5)",
     },
     "answer_groundedness_score": {
         "description": (
@@ -328,15 +331,16 @@ GOVAI_METRICS = {
         "derivation":  "1 if llm_call_count > 3 else 0",
         "unit":        "binary (0 or 1)",
     },
-    "response_accuracy_score": {
+    "feedback_accuracy_score": {
         "description": (
-            "A proxy for response quality based on how efficiently the agent responded within its time budget. "
-            "A low value indicates a fast, confident response with processing capacity to spare. "
-            "A value close to 1 signals the agent was under significant processing pressure. "
-            "A value above 1 indicates the query exceeded the timeout threshold. "
+            "Direct human validation of the AI response, rated 0–5 by the user who submitted the query. "
+            "A score of 5 means the user confirmed the answer was fully accurate and trustworthy. "
+            "A score of 0 means the response was rejected as incorrect or misleading. "
+            "This is the primary human-in-the-loop oversight signal required by AI governance frameworks — "
+            "it records that a real person has reviewed and vetted the AI output."
         ),
-        "derivation":  "duration_seconds / 90",
-        "unit":        "ratio (0–1+)",
+        "derivation":  "user feedback rating (0–5), sourced from POST /feedback",
+        "unit":        "score (0–5)",
     },
 }
 
@@ -347,14 +351,15 @@ ALL_METRICS_V2 = RAW_METRICS_V2 + list(GOVAI_METRICS.keys())
 def _derive_govai(record: dict, metric: str) -> float:
     if metric == "sql_sanity_score":
         total = record["total_cost_usd"]
-        return round(record["llm_cost_usd"] / total, 4) if total > 0 else 0.0
+        ratio = record["llm_cost_usd"] / total if total > 0 else 1.0
+        return round((1 - ratio) * 5, 2)
     if metric == "answer_groundedness_score":
         total = record["total_cost_usd"]
         return round(record["athena_cost_usd"] / total, 4) if total > 0 else 0.0
     if metric == "audit_trail_completeness":
         return 1.0 if record["llm_call_count"] > 3 else 0.0
-    if metric == "response_accuracy_score":
-        return round(record["duration_seconds"] / 90, 4)
+    if metric == "feedback_accuracy_score":
+        return record.get("feedback_score", 0.0)
     return 0.0
 
 
@@ -388,20 +393,20 @@ async def get_metrics_v2(
     _: str = Security(auth_api_key),
 ):
     """
-    Returns data for any KPI or Governance AI (GovAI) metric.
+    Returns data for any Operational KPI or Governance AI (GovAI) metric.
 
-    **Operational KPIs** — same names as `/metrics` (served from synthetic data instead of MLflow):\n
+    **Operational KPIs** - same names as `/metrics`:\n
     `duration_seconds`, `total_cost_usd`, `llm_cost_usd`, `athena_cost_usd`,
     `total_input_tokens`, `total_output_tokens`, `llm_call_count`
 
     ---
 
-    **Derived GovAI metrics**:
+    **Governance AI (GovAI) metrics**:
 
-    - **`sql_sanity_score`** *(ratio 0–1)*\n
-      Indicates whether the SQL generation process was efficient and well-targeted. A low score means
-      the agent spent most effort on data retrieval — SQL was correct on the first attempt. A high score
-      suggests excessive LLM retries, meaning the agent struggled to produce valid SQL.
+    - **`sql_sanity_score`** *(score 0–5)*\n
+      Rates the quality of the SQL generation process. 5 = agent spent almost all budget on data retrieval,
+      meaning SQL was well-formed on the first attempt. Close to 0 = excessive LLM retries, meaning the
+      agent struggled to produce valid SQL and required multiple correction cycles.
 
     - **`answer_groundedness_score`** *(ratio 0–1)*\n
       Measures how much of the query's work was driven by real data retrieval versus pure LLM reasoning.
@@ -414,11 +419,11 @@ async def get_metrics_v2(
       0 = simple single-pass query with minimal audit footprint. Average across window = proportion of
       fully-traceable queries.
 
-    - **`response_accuracy_score`** *(ratio 0–1+)*\n
-      Proxy for response quality based on how efficiently the agent responded within its time budget.
-      Low value = fast, confident response with processing capacity to spare. Close to 1 = agent under
-      significant processing pressure. Above 1 = query exceeded timeout. Will be replaced with direct
-      user feedback ratings (0–5) once the feedback pipeline is connected.
+    - **`feedback_accuracy_score`** *(score 0–5)*\n
+      Direct human validation of the AI response, rated 0–5 by the user who submitted the query.
+      5 = user confirmed the answer was fully accurate and trustworthy. 0 = response was rejected
+      as incorrect or misleading. This is the primary human-in-the-loop oversight signal required
+      by AI governance frameworks — it records that a real person has reviewed and vetted the AI output.
     """
     if metric not in ALL_METRICS_V2:
         raise HTTPException(
