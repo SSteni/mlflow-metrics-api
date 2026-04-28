@@ -263,8 +263,6 @@ async def get_metrics(
 
 # ── Synthetic data + GovAI metrics (/metricsv2) ───────────────────────────────
 
-random.seed(42)  # reproducible
-
 def _generate_synthetic_dataset(n: int = 2000):
     """Generate n synthetic query records with realistic distributions."""
     now = datetime.now(timezone.utc)
@@ -285,7 +283,7 @@ def _generate_synthetic_dataset(n: int = 2000):
         sql_safety   = round(min(5.0, max(0.0, random.gauss(4.2, 0.8))), 1)
         records.append({
             "timestamp":           ts,
-            "request_id":          f"syn{i:05d}",
+            "request_id":          f"req{i:05d}",
             "duration_seconds":    round(duration, 3),
             "total_cost_usd":      round(llm_cost + athena_cost, 6),
             "llm_cost_usd":        round(llm_cost, 6),
@@ -298,9 +296,6 @@ def _generate_synthetic_dataset(n: int = 2000):
         })
     records.sort(key=lambda r: r["timestamp"])
     return records
-
-# Generate once at startup
-_SYNTHETIC = _generate_synthetic_dataset(2000)
 
 GOVAI_METRICS = {
     "sql_sanity_score": {
@@ -454,8 +449,9 @@ async def get_metrics_v2(
     govai_info = GOVAI_METRICS.get(metric, {})
     unit       = govai_info.get("unit", "")
 
+    synthetic = _generate_synthetic_dataset(2000)
     datapoints: List[DataPoint] = []
-    for rec in _SYNTHETIC:
+    for rec in synthetic:
         ts = rec["timestamp"]
         if ts < start_dt or ts > end_dt:
             continue
@@ -505,7 +501,7 @@ async def list_metrics_v2(_: str = Security(auth_api_key)):
             }
             for name, info in GOVAI_METRICS.items()
         },
-        "source": "synthetic demo dataset (2000 records, 30-day window)",
+        "source": "synthetic demo dataset (2000 records generated live, 30-day window)",
     }
 
 
