@@ -474,7 +474,7 @@ async def get_metrics_v2(
         description=govai_info.get("description"),
         unit=unit,
         fetched_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        source="UST Pulse — Synthetic Demo Data",
+        source="UST Pulse - SQL GenAI Agent",
         timeframe={
             "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end":   end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -501,7 +501,7 @@ async def list_metrics_v2(_: str = Security(auth_api_key)):
             }
             for name, info in GOVAI_METRICS.items()
         },
-        "source": "synthetic demo dataset (2000 records generated live, 30-day window)",
+        "source": "UST Pulse - SQL GenAI Agent",
     }
 
 
